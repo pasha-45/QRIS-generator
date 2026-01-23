@@ -11,6 +11,44 @@ const PROJECT = "aspan-store";
 const AUTHOR = "Aspan-Official";
 
 // ============================
+// HELPERS
+// ============================
+async function postJSON(url, body) {
+  const res = await fetch(url, {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify(body),
+  });
+
+  let data;
+  try {
+    data = await res.json();
+  } catch {
+    data = { message: "Invalid JSON response" };
+  }
+
+  return { ok: res.ok, statusCode: res.status, data };
+}
+
+function pickStatus(data) {
+  // coba cari status di beberapa kemungkinan struktur response
+  return (
+    data?.transaction?.status ||
+    data?.payment?.status ||
+    data?.data?.status ||
+    data?.status ||
+    null
+  );
+}
+
+// ============================
+// ROOT
+// ============================
+app.get("/", (req, res) => {
+  res.json({ message: "QRIS API running", author: AUTHOR });
+});
+
+// ============================
 // CREATE QRIS INVOICE
 // ============================
 app.post("/qris", async (req, res) => {
@@ -24,24 +62,18 @@ app.post("/qris", async (req, res) => {
       });
     }
 
-    const response = await fetch(
+    const response = await postJSON(
       "https://app.pakasir.com/api/transactioncreate/qris",
       {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          project: PROJECT,
-          order_id,
-          amount,
-          api_key: API_KEY,
-        }),
+        project: PROJECT,
+        order_id,
+        amount,
+        api_key: API_KEY,
       }
     );
 
-    const data = await response.json();
-
     res.json({
-      ...data,
+      ...response.data,
       author: AUTHOR,
     });
   } catch (err) {
@@ -59,40 +91,45 @@ app.get("/status/:order_id", async (req, res) => {
   try {
     const { order_id } = req.params;
 
-    if (!order_id) {
-      return res.status(400).json({
-        error: "order_id wajib diisi",
-        author: AUTHOR,
+    // beberapa endpoint kemungkinan untuk detail/status
+    const endpointsToTry = [
+      "https://app.pakasir.com/api/transactiondetail",
+      "https://app.pakasir.com/api/transactiondetail/qris",
+      "https://app.pakasir.com/api/transactionstatus",
+      "https://app.pakasir.com/api/transactioncheck",
+    ];
+
+    let lastRaw = null;
+    let finalStatus = null;
+    let usedEndpoint = null;
+
+    for (const url of endpointsToTry) {
+      const resp = await postJSON(url, {
+        project: PROJECT,
+        order_id,
+        api_key: API_KEY,
       });
+
+      lastRaw = resp.data;
+
+      const st = pickStatus(resp.data);
+      if (st) {
+        finalStatus = st;
+        usedEndpoint = url;
+        break;
+      }
     }
 
-    // Pakasir: detail transaksi
-    const response = await fetch(
-      "https://app.pakasir.com/api/transactiondetail",
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          project: PROJECT,
-          order_id,
-          api_key: API_KEY,
-        }),
-      }
-    );
-
-    const data = await response.json();
-
-    // coba ambil status dari berbagai kemungkinan bentuk response
-    const status =
-      data?.transaction?.status ||
-      data?.data?.status ||
-      data?.status ||
-      "pending";
+    // kalau tetap tidak ketemu status
+    if (!finalStatus) {
+      finalStatus = "pending";
+    }
 
     res.json({
       order_id,
-      status,
-      raw: data, // biar kamu bisa lihat response asli dari pakasir
+      status: String(finalStatus).toLowerCase(),
+      endpoint_used: usedEndpoint,
+      raw: lastRaw,
       author: AUTHOR,
     });
   } catch (err) {
@@ -101,16 +138,6 @@ app.get("/status/:order_id", async (req, res) => {
       author: AUTHOR,
     });
   }
-});
-
-// ============================
-// HEALTH CHECK
-// ============================
-app.get("/", (req, res) => {
-  res.json({
-    message: "QRIS API running",
-    author: AUTHOR,
-  });
 });
 
 const PORT = process.env.PORT || 3000;
