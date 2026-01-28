@@ -4,27 +4,27 @@ import cors from "cors";
 
 const app = express();
 app.use(cors());
-app.use(express.json());
+app.use(express.json({ limit: "2mb" })); // ⬅️ penting biar webhook gak error
 
 const API_KEY = "Oxz8eU0CipNGMcKz4XVpJuKQ7ySOXodc";
 const PROJECT = "aspan-store";
 const AUTHOR = "Aspan-Official";
 
 /**
- * Simpan status order (memory)
- * NOTE: reset kalau server restart
+ * SIMPAN STATUS ORDER (memory)
+ * NOTE: reset kalau Railway restart
  */
 const ORDERS = {};
 
 // ================= ROOT =================
 app.get("/", (req, res) => {
-  res.json({ ok: true, message: "API ON", author: AUTHOR });
+  res.json({ ok: true, message: "QRIS API ON", author: AUTHOR });
 });
 
 // ================= CREATE QRIS =================
 app.post("/qris", async (req, res) => {
   try {
-    const { order_id, amount } = req.body;
+    const { order_id, amount } = req.body || {};
 
     if (!order_id || !amount) {
       return res.status(400).json({
@@ -57,6 +57,7 @@ app.post("/qris", async (req, res) => {
 
     return res.json({ ...data, author: AUTHOR });
   } catch (err) {
+    console.error("❌ CREATE QRIS ERROR:", err.message);
     return res.status(500).json({
       error: err.message,
       author: AUTHOR,
@@ -66,49 +67,106 @@ app.post("/qris", async (req, res) => {
 
 // ================= WEBHOOK PAKASIR =================
 app.post("/webhook/pakasir", (req, res) => {
-  const payload = req.body;
+  try {
+    const payload = req.body || {};
 
-  console.log("📩 WEBHOOK MASUK:", JSON.stringify(payload));
+    console.log("📩 WEBHOOK MASUK:");
+    console.log(JSON.stringify(payload, null, 2));
 
-  const orderId =
-    payload?.order_id ||
-    payload?.transaction?.order_id ||
-    payload?.data?.order_id;
+    const orderId =
+      payload.order_id ||
+      payload.transaction?.order_id ||
+      payload.data?.order_id;
 
-  const statusRaw =
-    payload?.status ||
-    payload?.transaction?.status ||
-    payload?.data?.status ||
-    "";
+    const statusRaw =
+      payload.status ||
+      payload.transaction?.status ||
+      payload.data?.status;
 
-  const status = String(statusRaw).toLowerCase();
+    const status = String(statusRaw || "").toLowerCase();
 
-  if (orderId && ["success", "paid", "completed"].includes(status)) {
-    ORDERS[orderId] = {
-      status: "success",
-      paid_at: new Date().toISOString(),
-      raw: payload,
-    };
+    if (orderId && ["success", "paid", "completed"].includes(status)) {
+      ORDERS[orderId] = {
+        status: "success",
+        paid_at: new Date().toISOString(),
+        raw: payload,
+      };
 
-    console.log("✅ ORDER SUCCESS:", orderId);
+      console.log("✅ ORDER SUCCESS:", orderId);
+    }
+
+    // ⬅️ WAJIB 200, JANGAN 500
+    return res.status(200).json({ ok: true });
+  } catch (err) {
+    console.error("❌ WEBHOOK ERROR:", err.message);
+    // tetap balas 200 supaya Pakasir stop retry
+    return res.status(200).json({ ok: false });
   }
-
-  res.json({ ok: true });
 });
 
-// ================= STATUS =================
-app.get("/status/:order_id", (req, res) => {
+// ================= ANTI 405 (PAKASIR SERING PANGGIL GET / OPTIONS) =================
+app.all("/webhook/pakasir", (req, res) => {
+  return res.status(200).json({ ok: true });
+});
+
+// ================= STATUS + FALLBACK KE PAKASIR =================
+app.get("/status/:order_id", async (req, res) => {
   const { order_id } = req.params;
 
-  if (ORDERS[order_id]) {
+  // 1️⃣ kalau sudah success di memory
+  if (ORDERS[order_id]?.status === "success") {
     return res.json({
       order_id,
-      status: ORDERS[order_id].status,
-      paid_at: ORDERS[order_id].paid_at || null,
+      status: "success",
+      paid_at: ORDERS[order_id].paid_at,
       author: AUTHOR,
     });
   }
 
+  // 2️⃣ fallback: cek langsung ke Pakasir (sandbox fix)
+  try {
+    const response = await fetch(
+      "https://app.pakasir.com/api/transactiondetail",
+      {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          project: PROJECT,
+          order_id,
+          api_key: API_KEY,
+        }),
+      }
+    );
+
+    const data = await response.json();
+
+    const statusRaw =
+      data?.transaction?.status ||
+      data?.data?.status ||
+      data?.status ||
+      "";
+
+    const status = String(statusRaw).toLowerCase();
+
+    if (["success", "paid", "completed"].includes(status)) {
+      ORDERS[order_id] = {
+        status: "success",
+        paid_at: new Date().toISOString(),
+        raw: data,
+      };
+
+      return res.json({
+        order_id,
+        status: "success",
+        paid_at: ORDERS[order_id].paid_at,
+        author: AUTHOR,
+      });
+    }
+  } catch (err) {
+    console.error("❌ FALLBACK STATUS ERROR:", err.message);
+  }
+
+  // 3️⃣ default pending
   return res.json({
     order_id,
     status: "pending",
