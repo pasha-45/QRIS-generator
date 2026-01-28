@@ -11,19 +11,14 @@ const PROJECT = "aspan-store";
 const AUTHOR = "Aspan-Official";
 
 /**
- * SIMPAN STATUS ORDER
- * sementara pakai memory
- * (kalau server restart, status reset — nanti bisa upgrade DB)
+ * Simpan status order (memory)
+ * NOTE: reset kalau server restart
  */
-const PAID_ORDERS = {};
+const ORDERS = {};
 
 // ================= ROOT =================
 app.get("/", (req, res) => {
-  res.json({
-    ok: true,
-    message: "QRIS API ON",
-    author: AUTHOR,
-  });
+  res.json({ ok: true, message: "API ON", author: AUTHOR });
 });
 
 // ================= CREATE QRIS =================
@@ -54,10 +49,13 @@ app.post("/qris", async (req, res) => {
 
     const data = await response.json();
 
-    return res.json({
-      ...data,
-      author: AUTHOR,
-    });
+    // simpan awal sebagai pending
+    ORDERS[order_id] = {
+      status: "pending",
+      created_at: new Date().toISOString(),
+    };
+
+    return res.json({ ...data, author: AUTHOR });
   } catch (err) {
     return res.status(500).json({
       error: err.message,
@@ -70,20 +68,23 @@ app.post("/qris", async (req, res) => {
 app.post("/webhook/pakasir", (req, res) => {
   const payload = req.body;
 
-  console.log("📩 WEBHOOK MASUK:", payload);
+  console.log("📩 WEBHOOK MASUK:", JSON.stringify(payload));
 
   const orderId =
     payload?.order_id ||
     payload?.transaction?.order_id ||
     payload?.data?.order_id;
 
-  const status =
+  const statusRaw =
     payload?.status ||
     payload?.transaction?.status ||
-    payload?.data?.status;
+    payload?.data?.status ||
+    "";
 
-  if (orderId && status === "success") {
-    PAID_ORDERS[orderId] = {
+  const status = String(statusRaw).toLowerCase();
+
+  if (orderId && ["success", "paid", "completed"].includes(status)) {
+    ORDERS[orderId] = {
       status: "success",
       paid_at: new Date().toISOString(),
       raw: payload,
@@ -92,18 +93,18 @@ app.post("/webhook/pakasir", (req, res) => {
     console.log("✅ ORDER SUCCESS:", orderId);
   }
 
-  return res.json({ ok: true });
+  res.json({ ok: true });
 });
 
-// ================= CEK STATUS =================
+// ================= STATUS =================
 app.get("/status/:order_id", (req, res) => {
   const { order_id } = req.params;
 
-  if (PAID_ORDERS[order_id]) {
+  if (ORDERS[order_id]) {
     return res.json({
       order_id,
-      status: "success",
-      paid_at: PAID_ORDERS[order_id].paid_at,
+      status: ORDERS[order_id].status,
+      paid_at: ORDERS[order_id].paid_at || null,
       author: AUTHOR,
     });
   }
@@ -115,7 +116,7 @@ app.get("/status/:order_id", (req, res) => {
   });
 });
 
-// ================= START SERVER =================
+// ================= START =================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, "0.0.0.0", () => {
   console.log("🚀 QRIS API running on port", PORT);
