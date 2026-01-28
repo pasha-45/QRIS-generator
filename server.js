@@ -10,12 +10,23 @@ const API_KEY = "Oxz8eU0CipNGMcKz4XVpJuKQ7ySOXodc";
 const PROJECT = "aspan-store";
 const AUTHOR = "Aspan-Official";
 
-// ROOT (buat test)
+/**
+ * SIMPAN STATUS ORDER
+ * sementara pakai memory
+ * (kalau server restart, status reset — nanti bisa upgrade DB)
+ */
+const PAID_ORDERS = {};
+
+// ================= ROOT =================
 app.get("/", (req, res) => {
-  res.json({ ok: true, message: "API ON", author: AUTHOR });
+  res.json({
+    ok: true,
+    message: "QRIS API ON",
+    author: AUTHOR,
+  });
 });
 
-// CREATE QRIS
+// ================= CREATE QRIS =================
 app.post("/qris", async (req, res) => {
   try {
     const { order_id, amount } = req.body;
@@ -55,9 +66,47 @@ app.post("/qris", async (req, res) => {
   }
 });
 
-// STATUS (sementara dummy dulu biar service stabil)
+// ================= WEBHOOK PAKASIR =================
+app.post("/webhook/pakasir", (req, res) => {
+  const payload = req.body;
+
+  console.log("📩 WEBHOOK MASUK:", payload);
+
+  const orderId =
+    payload?.order_id ||
+    payload?.transaction?.order_id ||
+    payload?.data?.order_id;
+
+  const status =
+    payload?.status ||
+    payload?.transaction?.status ||
+    payload?.data?.status;
+
+  if (orderId && status === "success") {
+    PAID_ORDERS[orderId] = {
+      status: "success",
+      paid_at: new Date().toISOString(),
+      raw: payload,
+    };
+
+    console.log("✅ ORDER SUCCESS:", orderId);
+  }
+
+  return res.json({ ok: true });
+});
+
+// ================= CEK STATUS =================
 app.get("/status/:order_id", (req, res) => {
   const { order_id } = req.params;
+
+  if (PAID_ORDERS[order_id]) {
+    return res.json({
+      order_id,
+      status: "success",
+      paid_at: PAID_ORDERS[order_id].paid_at,
+      author: AUTHOR,
+    });
+  }
 
   return res.json({
     order_id,
@@ -66,7 +115,8 @@ app.get("/status/:order_id", (req, res) => {
   });
 });
 
+// ================= START SERVER =================
 const PORT = process.env.PORT || 3000;
 app.listen(PORT, "0.0.0.0", () => {
-  console.log("QRIS API running on port", PORT);
+  console.log("🚀 QRIS API running on port", PORT);
 });
